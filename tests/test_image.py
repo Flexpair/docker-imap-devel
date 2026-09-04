@@ -17,10 +17,11 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-IMAGE = os.environ.get("IMAGE", "docker-imap-devel:test")
+IMAGE = os.environ.get("IMAGE", f"docker-imap-devel-smoke:{os.getpid()}")
 CONTAINER = os.environ.get("CONTAINER", f"docker-imap-devel-test-{os.getpid()}")
 MAILNAME = "localdomain.test"
 TEST_ADDRESS = f"test@{MAILNAME}"
+REUSE_IMAGE = os.environ.get("REUSE_IMAGE") == "1"
 
 
 def docker(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -69,7 +70,6 @@ class RepositoryPolicyTest(unittest.TestCase):
 class DockerImageSmokeTest(unittest.TestCase):
     """Exercise the image's actual SMTP, IMAP, and service startup paths."""
 
-    image_was_built = False
     smtp_port = 0
     imap_port = 0
 
@@ -80,10 +80,11 @@ class DockerImageSmokeTest(unittest.TestCase):
 
         docker("rm", "--force", "--volumes", CONTAINER, check=False)
         image_exists = docker("image", "inspect", IMAGE, check=False).returncode == 0
-        if not image_exists:
+        if not REUSE_IMAGE or not image_exists:
             docker("build", "--tag", IMAGE, ".")
-            cls.image_was_built = True
+            cls.addClassCleanup(docker, "image", "rm", IMAGE, check=False)
 
+        cls.addClassCleanup(docker, "rm", "--force", "--volumes", CONTAINER, check=False)
         docker(
             "run",
             "--detach",
@@ -106,12 +107,6 @@ class DockerImageSmokeTest(unittest.TestCase):
         cls._wait_for_services()
 
     @classmethod
-    def tearDownClass(cls) -> None:
-        docker("rm", "--force", "--volumes", CONTAINER, check=False)
-        if cls.image_was_built:
-            docker("image", "rm", IMAGE, check=False)
-
-    @classmethod
     def _wait_for_services(cls) -> None:
         last_output = ""
         for _ in range(30):
@@ -120,7 +115,11 @@ class DockerImageSmokeTest(unittest.TestCase):
                 CONTAINER,
                 "sh",
                 "-c",
-                "postfix check && doveconf -n >/dev/null",
+                "postfix check && doveconf -n >/dev/null && "
+                f"grep -Fq '{TEST_ADDRESS}' /etc/dovecot/userdb && "
+                f"grep -Fq 'debug@{MAILNAME}' /etc/dovecot/userdb && "
+                f"grep -Fq '{TEST_ADDRESS}' /etc/postfix/vmailbox && "
+                f"grep -Fq 'debug@{MAILNAME}' /etc/postfix/vmailbox",
                 check=False,
             )
             last_output = result.stdout

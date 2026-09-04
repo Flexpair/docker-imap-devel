@@ -45,6 +45,9 @@ must be installed and running:
 python3 -m unittest discover -s tests -v
 ```
 
+The local test command builds a fresh, uniquely tagged image by default. To
+reuse an image built separately, set both `IMAGE` and `REUSE_IMAGE=1`.
+
 ## Catch all debug mailbox
 
 Every email received via SMTP is delivered locally to `debug@example.org`.
