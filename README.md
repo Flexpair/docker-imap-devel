@@ -36,8 +36,18 @@ docker-compose up
 Configure your email client with these parameters and test it sending 
 any email to any email address 
 
-### Catch all debug mailbox
+## Tests
 
+The repository includes dependency-free smoke tests for the Docker image. Docker
+must be installed and running:
+
+```
+python3 -m unittest discover -s tests -v
+```
+
+## Catch all debug mailbox
+
+Every email received via SMTP is delivered locally to `debug@example.org`.
 
 - **IMAP server:** `imap`
 - **IMAP encryption:** `SSL`
@@ -50,9 +60,7 @@ any email to any email address
 - **SMTP port:** `25`
 - **SMTP authentication:** `none`
 
-
-### Normal user mailbox (Optional)
-
+## Normal user mailbox (optional)
 
 - **IMAP server:** `imap`
 - **IMAP encryption:** `SSL`
