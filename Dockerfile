@@ -1,4 +1,4 @@
-FROM ubuntu:16.04
+FROM ubuntu:26.04
 
 LABEL org.opencontainers.image.authors="antespi@gmail.com"
 
