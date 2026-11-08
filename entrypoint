@@ -7,6 +7,7 @@ DEBUG_PASS="debug"
 MAIL_LOCATION='/var/mail'
 POSTMASTER_ADDRESS="postmaster@${MAILNAME}"
 HOSTNAME="$(hostname -f)"
+RSYSLOG_PID=""
 
 _add_line() {
     local check="$1"
@@ -29,7 +30,9 @@ _log() {
 
 _stop() {
     /etc/init.d/postfix stop
-    /etc/init.d/rsyslog stop
+    if [ -n "$RSYSLOG_PID" ] && kill -0 "$RSYSLOG_PID" 2>/dev/null; then
+        kill -TERM "$RSYSLOG_PID"
+    fi
     if [ -f /var/run/dovecot/master.pid ]; then
         kill -15 $(cat /var/run/dovecot/master.pid)
         rm -rf /var/run/dovecot/master.pid
@@ -129,6 +132,10 @@ _add_line "$DEBUG_ADDRESS" "/.+@.+/ $DEBUG_ADDRESS" /etc/postfix/virtual_regexp
 /usr/sbin/postmap /etc/postfix/sender_canonical_regexp
 
 # Configuring Dovecot
+if [ ! -s /etc/ssl/certs/ssl-cert-snakeoil.pem ] || [ ! -s /etc/ssl/private/ssl-cert-snakeoil.key ]; then
+    DEBIAN_FRONTEND=noninteractive make-ssl-cert generate-default-snakeoil --force-overwrite
+fi
+
 cp -a /usr/share/dovecot/protocols.d /etc/dovecot/
 sed -i -e 's/include_try \/usr\/share\/dovecot\/protocols\.d/include_try \/etc\/dovecot\/protocols\.d/g' /etc/dovecot/dovecot.conf
 sed -i -e 's/^.*postmaster_address.*/postmaster_address = '${POSTMASTER_ADDRESS}'/g' /etc/dovecot/conf.d/15-lda.conf
@@ -138,7 +145,8 @@ sed -i -e 's/^.*postmaster_address.*/  postmaster_address = '${POSTMASTER_ADDRES
 _log "Docker entrypoint configured"
 
 # Start syslog daemon
-/etc/init.d/rsyslog start
+rsyslogd -n &
+RSYSLOG_PID=$!
 
 # Start Postfix daemon
 /etc/init.d/postfix start
