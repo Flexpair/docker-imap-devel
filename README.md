@@ -1,77 +1,86 @@
-# Dockerized IMAP server#
+# Dockerized IMAP server
 
-IMAP server for debugging.
+A small Postfix (SMTP) and Dovecot (IMAP) server for local development and
+mail-flow debugging. It provides a catch-all mailbox so messages sent to
+arbitrary recipient addresses can be inspected locally. An optional regular
+mailbox can also be configured.
 
-**IMPORTANT**: This image is **ONLY** for developing/debugging proposes
+> **Development use only.** This image uses a fixed debug password, a
+> development TLS certificate, and unauthenticated SMTP. Do not expose it to an
+> untrusted network or use it for production mail.
 
-This docker image is based on https://github.com/tomav/docker-mailserver
-If you look for a docker image for production environment, then go here:
-https://hub.docker.com/r/tvial/docker-mailserver/
+## Quick start
 
-This image is even simpler than `tvial` docker image. Includes only 
-Postfix (SMTP) and Dovecot (IMAP) servers with one catchall mailbox 
-`debug@example.org` for all emails. So, it's very useful for debugging. Optionally, you can define another normal mailbox.
+Copy the example Compose file and adjust the mailbox settings if needed:
 
-Every email received via SMTP will be delivered locally to `debug@example.org`, so it's safe for testing a web application sending emails with a production list of emails.
-
-Using your favorite email client you can connect via IMAP protocol to see emails like original recipient would received them
-
-
-## Run container with docker compose
-
-```
+```sh
 cp docker-compose.yml.dist docker-compose.yml
+# Edit MAILNAME, MAIL_ADDRESS, and MAIL_PASS in docker-compose.yml.
+docker compose up --build
 ```
 
-Edit ```docker-compose.yml``` for set these environment variables:
+Compose builds the image from this checkout, publishes ports only on the host's
+loopback interface, and stores messages in a named volume. To stop the services
+while keeping mail, run `docker compose down`. To delete the mail volume too,
+run `docker compose down -v`.
 
-- MAILNAME: Mail domain (by default, `localdomain.test`)
-- MAIL_ADDRESS: Normal user mailbox email address (optional)
-- MAIL_PASS: Normal user mailbox password
+### Configuration
 
-```
-docker-compose up
-```
+- `MAILNAME`: mailbox domain; the image default is `localdomain.test`.
+- `MAIL_ADDRESS`: optional simple `local-part@domain` mailbox address.
+- `MAIL_PASS`: password for `MAIL_ADDRESS`; required when that address is set.
 
-Configure your email client with these parameters and test it sending 
-any email to any email address 
+The example Compose file includes sample values for local use. Change the
+password before use, and don't reuse it for any real account.
+
+## Connect to the server
+
+From a mail client or application running on the **host**, use `localhost`:
+
+| Service | Host | Port | Security / authentication |
+| --- | --- | ---: | --- |
+| SMTP | `localhost` | `2525` | No TLS or authentication; recipients are redirected to the debug mailbox. |
+| IMAP | `localhost` | `9930` | IMAPS. The bundled development certificate is self-signed. |
+| IMAP (optional) | `localhost` | `1430` | IMAP with STARTTLS; TLS is required. |
+
+The Compose port mappings bind to `127.0.0.1`. If you change them, keep the
+service on a trusted, local-only network. In particular, never publish the
+unauthenticated SMTP port to the public internet.
+
+From another container attached to the same Compose network, use the service
+name `imap` and the container ports: SMTP `25`, IMAPS `993`, or IMAP with
+STARTTLS `143`.
+
+### Catch-all debug mailbox
+
+SMTP recipients are redirected to `debug@${MAILNAME}`, except mail addressed
+to the configured `MAIL_ADDRESS`. Use these credentials to inspect catch-all
+messages:
+
+- **Username:** `debug@example.org` (replace the domain with `MAILNAME`)
+- **Password:** `debug`
+
+The SMTP server does not require authentication. This is deliberate for local
+mail-flow testing, not a safe production configuration. The self-signed IMAP
+certificate will trigger a trust warning in many clients; trust it only in a
+local development setup, or temporarily disable certificate verification for
+that test account.
+
+### Optional normal mailbox
+
+When `MAIL_ADDRESS` and `MAIL_PASS` are set, the image creates a mailbox for
+that account. Messages addressed to it are delivered there rather than to the
+catch-all. For example, the sample settings create `address@example.org` with
+the configured `MAIL_PASS`.
 
 ## Tests
 
-The repository includes dependency-free smoke tests for the Docker image. Docker
-must be installed and running:
+The dependency-free smoke tests build and exercise the Docker image. Docker must
+be installed and running:
 
-```
+```sh
 python3 -m unittest discover -s tests -v
 ```
 
 The local test command builds a fresh, uniquely tagged image by default. To
 reuse an image built separately, set both `IMAGE` and `REUSE_IMAGE=1`.
-
-## Catch all debug mailbox
-
-Every email received via SMTP is delivered locally to `debug@example.org`.
-
-- **IMAP server:** `imap`
-- **IMAP encryption:** `SSL`
-- **IMAP port:** `993`
-- **IMAP username:** `debug@example.org` (change `example.org` by your `MAILNAME`)
-- **IMAP password:** `debug`
-
-- **SMTP server:** `imap`
-- **SMTP encryption:** `No`
-- **SMTP port:** `25`
-- **SMTP authentication:** `none`
-
-## Normal user mailbox (optional)
-
-- **IMAP server:** `imap`
-- **IMAP encryption:** `SSL`
-- **IMAP port:** `993`
-- **IMAP username:** `address@example.org` (change `address@example.org` by your `MAIL_ADDRESS`)
-- **IMAP password:** `pass` (change `pass` by your `MAIL_PASS`)
-
-- **SMTP server:** `imap`
-- **SMTP encryption:** `No`
-- **SMTP port:** `25`
-- **SMTP authentication:** `none`

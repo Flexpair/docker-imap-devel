@@ -66,6 +66,22 @@ class RepositoryPolicyTest(unittest.TestCase):
         self.assertRegex(dockerfile, r"(?m)^\s*LABEL\s+org\.opencontainers\.image\.authors=")
         self.assertRegex(dockerfile, r"(?m)^\s*COPY\s+postfix\s+/etc/postfix\s*$")
 
+    def test_compose_example_builds_locally_and_binds_to_loopback(self) -> None:
+        compose = (ROOT / "docker-compose.yml.dist").read_text()
+
+        self.assertRegex(compose, r"(?m)^[ \t]+build:[ \t]*$")
+        self.assertIn('"127.0.0.1:2525:25"', compose)
+        self.assertIn('"127.0.0.1:1430:143"', compose)
+        self.assertIn('"127.0.0.1:9930:993"', compose)
+        self.assertIn("maildata:/var/mail", compose)
+
+    def test_entrypoint_sets_postfix_values_and_uses_literal_account_checks(self) -> None:
+        entrypoint = (ROOT / "entrypoint").read_text()
+
+        self.assertIn("postconf -e 'smtp_helo_name=$myhostname.$mydomain'", entrypoint)
+        self.assertIn("postconf -e compatibility_level=2", entrypoint)
+        self.assertIn('grep -Fqx -- "$line" "$file"', entrypoint)
+
 
 class DockerImageSmokeTest(unittest.TestCase):
     """Exercise the image's actual SMTP, IMAP, and service startup paths."""
@@ -132,6 +148,50 @@ class DockerImageSmokeTest(unittest.TestCase):
     def _exec(self, *args: str) -> subprocess.CompletedProcess[str]:
         return docker("exec", CONTAINER, *args)
 
+    def _send_message(self, recipient: str, subject: str) -> None:
+        message = EmailMessage()
+        message["From"] = f"sender@{MAILNAME}"
+        message["To"] = recipient
+        message["Subject"] = subject
+        message.set_content("Docker image smoke test")
+
+        with smtplib.SMTP("127.0.0.1", self.smtp_port, timeout=10) as client:
+            client.send_message(message)
+
+    def _wait_for_message(self, mailbox: str, subject: str) -> None:
+        mailbox_dir = f"/var/mail/{MAILNAME}/{mailbox}/new"
+        delivered_file = ""
+        for _ in range(30):
+            result = self._exec("find", mailbox_dir, "-type", "f", "-print", "-quit")
+            delivered_file = result.stdout.strip()
+            if delivered_file:
+                break
+            time.sleep(1)
+
+        self.assertTrue(delivered_file, f"SMTP message was not delivered to {mailbox} mailbox")
+        self._exec("grep", "-Fq", subject, delivered_file)
+
+    def _assert_imap_login(self, username: str, password: str) -> None:
+        context = ssl._create_unverified_context()
+        last_error: Exception | None = None
+        for _ in range(30):
+            try:
+                connection = imaplib.IMAP4_SSL(
+                    "127.0.0.1",
+                    self.imap_port,
+                    ssl_context=context,
+                )
+                try:
+                    status, _ = connection.login(username, password)
+                    self.assertEqual(status, "OK")
+                finally:
+                    connection.logout()
+                return
+            except (OSError, imaplib.IMAP4.error) as error:
+                last_error = error
+                time.sleep(1)
+        raise AssertionError(f"IMAP login did not become ready: {last_error}")
+
     def test_container_is_running_with_configured_accounts(self) -> None:
         state = docker("inspect", "--format", "{{.State.Status}}", CONTAINER).stdout.strip()
         self.assertEqual(state, "running")
@@ -143,51 +203,20 @@ class DockerImageSmokeTest(unittest.TestCase):
         self._exec("grep", "-Fq", f"/.+@.+/ debug@{MAILNAME}", "/etc/postfix/virtual_regexp")
 
     def test_debug_account_accepts_imap_login(self) -> None:
-        context = ssl._create_unverified_context()
-        last_error: Exception | None = None
-        for _ in range(30):
-            try:
-                connection = imaplib.IMAP4_SSL(
-                    "127.0.0.1",
-                    self.imap_port,
-                    ssl_context=context,
-                )
-                try:
-                    status, _ = connection.login(f"debug@{MAILNAME}", "debug")
-                    self.assertEqual(status, "OK")
-                finally:
-                    connection.logout()
-                return
-            except (OSError, imaplib.IMAP4.error) as error:
-                last_error = error
-                time.sleep(1)
-        raise AssertionError(f"IMAP login did not become ready: {last_error}")
+        self._assert_imap_login(f"debug@{MAILNAME}", "debug")
+
+    def test_optional_account_accepts_imap_login(self) -> None:
+        self._assert_imap_login(TEST_ADDRESS, "test-password")
 
     def test_smtp_catchall_delivers_to_debug_mailbox(self) -> None:
-        subject = f"docker-imap-devel-smoke-{time.time_ns()}"
-        message = EmailMessage()
-        message["From"] = f"sender@{MAILNAME}"
-        message["To"] = f"recipient@{MAILNAME}"
-        message["Subject"] = subject
-        message.set_content("Docker image smoke test")
+        subject = f"docker-imap-devel-catchall-{time.time_ns()}"
+        self._send_message(f"recipient@{MAILNAME}", subject)
+        self._wait_for_message("debug", subject)
 
-        with smtplib.SMTP("127.0.0.1", self.smtp_port, timeout=10) as client:
-            client.send_message(message)
-
-        delivered_file = ""
-        for _ in range(30):
-            result = self._exec(
-                "sh",
-                "-c",
-                "find /var/mail/localdomain.test/debug/new -type f -print -quit",
-            )
-            delivered_file = result.stdout.strip()
-            if delivered_file:
-                break
-            time.sleep(1)
-
-        self.assertTrue(delivered_file, "SMTP message was not delivered to debug mailbox")
-        self._exec("grep", "-Fq", subject, delivered_file)
+    def test_smtp_delivers_to_optional_mailbox(self) -> None:
+        subject = f"docker-imap-devel-user-{time.time_ns()}"
+        self._send_message(TEST_ADDRESS, subject)
+        self._wait_for_message("test", subject)
 
 
 if __name__ == "__main__":

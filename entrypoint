@@ -9,11 +9,10 @@ POSTMASTER_ADDRESS="postmaster@${MAILNAME}"
 HOSTNAME="$(hostname -f)"
 
 _add_line() {
-    local check="$1"
-    local line="$2"
-    local file="$3"
-    if ! grep -q "$check" "$file"; then
-        echo "$line" >> "$file"
+    local line="$1"
+    local file="$2"
+    if ! grep -Fqx -- "$line" "$file"; then
+        printf '%s\n' "$line" >> "$file"
     fi
 }
 
@@ -38,41 +37,72 @@ _stop() {
 }
 
 _account_add() {
-    local login=$1
-    local user=$(echo ${login} | cut -d @ -f1)
-    local domain=$(echo ${login} | cut -d @ -f2)
-    local pass=$(doveadm pw -s SHA512-CRYPT -u $login -p $2)
+    local login="$1"
+    local password="$2"
+    local user="${login%@*}"
+    local domain="${login#*@}"
 
-    local uid=$(cat /etc/passwd | grep $MAIL_FS_USER | cut -d':' -f3)
-    local gid=$(cat /etc/passwd | grep $MAIL_FS_USER | cut -d':' -f4)
+    # These values become passwd-file fields and mailbox path components.
+    # Reject separators and traversal components before using them in either.
+    if [[ "$login" != *@* || "$domain" == *@* \
+        || ! "$user" =~ ^[a-zA-Z0-9._+-]+$ \
+        || ! "$domain" =~ ^[a-zA-Z0-9.-]+$ \
+        || "$user" == . || "$user" == .. \
+        || "$domain" == . || "$domain" == .. ]]; then
+        _log "Invalid mailbox address; use a simple local-part@domain address"
+        return 1
+    fi
 
-    if grep -q "${domain}/${user}" /etc/postfix/vmailbox; then
+    if [ -z "$password" ]; then
+        _log "Mailbox password must not be empty"
+        return 1
+    fi
+
+    local pass
+    pass=$(doveadm pw -s SHA512-CRYPT -u "$login" -p "$password")
+    local uid
+    local gid
+    uid=$(id -u "$MAIL_FS_USER")
+    gid=$(id -g "$MAIL_FS_USER")
+
+    # Replace any previous passwd-file row so changing MAIL_PASS takes effect
+    # when the container is restarted.
+    local userdb_file=/etc/dovecot/userdb
+    local userdb_tmp=/etc/dovecot/userdb.tmp
+    touch "$userdb_file"
+    awk -F: -v login="$login" '$1 != login' "$userdb_file" > "$userdb_tmp"
+    printf '%s:%s:%s:%s::%s/%s/%s::\n' \\
+        "$login" "$pass" "$uid" "$gid" "$MAIL_FS_HOME" "$domain" "$user" \\
+        >> "$userdb_tmp"
+    mv "$userdb_tmp" "$userdb_file"
+
+    local mail_domain_dir="${MAIL_LOCATION}/${domain}"
+    local mail_user_dir="${mail_domain_dir}/${user}"
+    if [ ! -d "$mail_domain_dir" ]; then
+        mkdir -p -- "$mail_domain_dir"
+        chown "$uid:$gid" "$mail_domain_dir"
+    fi
+
+    if [ ! -d "$mail_user_dir" ]; then
+        maildirmake.dovecot "$mail_user_dir"
+        maildirmake.dovecot "$mail_user_dir/.Sent"
+        maildirmake.dovecot "$mail_user_dir/.Trash"
+        maildirmake.dovecot "$mail_user_dir/.Drafts"
+        printf 'INBOX\nSent\nTrash\nDrafts\n' > "$mail_user_dir/subscriptions"
+        touch "$mail_user_dir/.Sent/maildirfolder"
+        chown -R "$uid:$gid" "$mail_user_dir"
+    fi
+
+    if ! grep -Fqx -- "$domain" /etc/postfix/vhost; then
+        printf '%s\n' "$domain" >> /etc/postfix/vhost
+    fi
+
+    local mailbox_entry="${login} ${domain}/${user}/"
+    if grep -Fqx -- "$mailbox_entry" /etc/postfix/vmailbox; then
         _log "User '$login' already configured"
-        return 0
+    else
+        printf '%s\n' "$mailbox_entry" >> /etc/postfix/vmailbox
     fi
-
-    echo "${login}:${pass}:${uid}:${gid}::${MAIL_FS_HOME}/${domain}/${user}::" >> /etc/dovecot/userdb
-
-    if [ ! -d "${MAIL_LOCATION}/${domain}" ]; then
-        mkdir -p "${MAIL_LOCATION}/${domain}"
-        chown ${uid}:${gid} "${MAIL_LOCATION}/${domain}"
-    fi
-
-    if [ ! -d "${MAIL_LOCATION}/${domain}/${user}" ]; then
-        maildirmake.dovecot "${MAIL_LOCATION}/${domain}/${user}"
-        maildirmake.dovecot "${MAIL_LOCATION}/${domain}/${user}/.Sent"
-        maildirmake.dovecot "${MAIL_LOCATION}/${domain}/${user}/.Trash"
-        maildirmake.dovecot "${MAIL_LOCATION}/${domain}/${user}/.Drafts"
-        echo -e "INBOX\nSent\nTrash\nDrafts" >> "${MAIL_LOCATION}/${domain}/${user}/subscriptions"
-        touch "${MAIL_LOCATION}/${domain}/${user}/.Sent/maildirfolder"
-        chown -R ${uid}:${gid} "${MAIL_LOCATION}/${domain}/${user}"
-    fi
-
-    if ! grep -q "$domain" /etc/postfix/vhost; then
-        echo "$domain" >> /etc/postfix/vhost
-    fi
-
-    echo "${login} ${domain}/${user}/" >> /etc/postfix/vmailbox
     /usr/sbin/postmap /etc/postfix/vmailbox
 }
 
@@ -83,16 +113,16 @@ _log "Docker entrypoint start"
 # Configuring Postfix
 
 if [ -n "$MAILNAME" ]; then
-    echo $MAILNAME > /etc/mailname;
-    /usr/sbin/postconf -e mydomain=$MAILNAME
-    if ! grep -q "$MAILNAME" /etc/postfix/vhost; then
-        echo "$MAILNAME" >> /etc/postfix/vhost
+    printf '%s\n' "$MAILNAME" > /etc/mailname
+    /usr/sbin/postconf -e "mydomain=$MAILNAME"
+    if ! grep -Fqx -- "$MAILNAME" /etc/postfix/vhost; then
+        printf '%s\n' "$MAILNAME" >> /etc/postfix/vhost
     fi
-    /usr/sbin/postconf -e smtp_helo_name=\$myhostname.\$mydomain
+    /usr/sbin/postconf -e 'smtp_helo_name=$myhostname.$mydomain'
 fi
 
 if [ -n "$HOSTNAME" ]; then
-    /usr/sbin/postconf -e myhostname=$HOSTNAME
+    /usr/sbin/postconf -e "myhostname=$HOSTNAME"
 fi
 
 routes=$(ip route | grep -v default | cut -d' ' -f1)
@@ -109,19 +139,24 @@ fi
 /usr/sbin/postconf -e mailbox_transport=lmtp:unix:private/dovecot-lmtp
 /usr/sbin/postconf -e virtual_mailbox_domains=/etc/postfix/vhost
 /usr/sbin/postconf -e virtual_mailbox_maps=hash:/etc/postfix/vmailbox
-/usr/sbin/postconf compatibility_level=2
+/usr/sbin/postconf -e compatibility_level=2
 
 # Create user account
 if [ -n "$MAIL_ADDRESS" ]; then
+    if [ -z "$MAIL_PASS" ]; then
+        _log "MAIL_PASS must be set when MAIL_ADDRESS is configured"
+        exit 1
+    fi
     _account_add "$MAIL_ADDRESS" "$MAIL_PASS"
-    _add_line "$MAIL_ADDRESS" "/$MAIL_ADDRESS/ $MAIL_ADDRESS" /etc/postfix/virtual_regexp
+    escaped_mail_address=$(printf '%s' "$MAIL_ADDRESS" | sed 's/[.+]/\\&/g')
+    _add_line "/^${escaped_mail_address}$/ $MAIL_ADDRESS" /etc/postfix/virtual_regexp
 fi
 
 # Create debug account
 _account_add "$DEBUG_ADDRESS" "$DEBUG_PASS"
 
 # Force to send all emails to debug email address, no email to outside
-_add_line "$DEBUG_ADDRESS" "/.+@.+/ $DEBUG_ADDRESS" /etc/postfix/virtual_regexp
+_add_line "/.+@.+/ $DEBUG_ADDRESS" /etc/postfix/virtual_regexp
 
 /usr/sbin/postmap /etc/postfix/virtual_regexp
 /usr/sbin/postmap /etc/postfix/virtual
@@ -147,4 +182,4 @@ _log "Docker entrypoint configured"
 rm -rf /var/run/dovecot/master.pid
 /usr/sbin/dovecot -c /etc/dovecot/dovecot.conf
 
-$@ & wait ${!}
+"$@" & wait "$!"
