@@ -1,17 +1,20 @@
-version: '2'
-
 services:
   imap:
-    # Uncomment this for build image in local
-    # build:
-    #   context: .
-    image: antespi/docker-imap-devel:latest
-    container_name: imap
+    # Build the image from this checkout rather than pulling a possibly stale tag.
+    image: docker-imap-devel:local
+    build:
+      context: .
+    # Development service only: don't expose unauthenticated SMTP/IMAP to your LAN.
     ports:
-    - "25:25"
-    - "143:143"
-    - "993:993"
+      - "127.0.0.1:2525:25"
+      - "127.0.0.1:1430:143"
+      - "127.0.0.1:9930:993"
     environment:
-    - MAILNAME=example.org
-    - MAIL_ADDRESS=address@example.org
-    - MAIL_PASS=pass
+      MAILNAME: example.org
+      MAIL_ADDRESS: address@example.org
+      MAIL_PASS: pass
+    volumes:
+      - maildata:/var/mail
+
+volumes:
+  maildata:

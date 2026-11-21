@@ -30,6 +30,7 @@ jobs:
         run: python3 -m unittest discover -s tests -v
 
   build:
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read
