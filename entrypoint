@@ -71,9 +71,7 @@ _account_add() {
     local userdb_tmp=/etc/dovecot/userdb.tmp
     touch "$userdb_file"
     awk -F: -v login="$login" '$1 != login' "$userdb_file" > "$userdb_tmp"
-    printf '%s:%s:%s:%s::%s/%s/%s::\n' \\
-        "$login" "$pass" "$uid" "$gid" "$MAIL_FS_HOME" "$domain" "$user" \\
-        >> "$userdb_tmp"
+    printf '%s:%s:%s:%s::%s/%s/%s::\n' "$login" "$pass" "$uid" "$gid" "$MAIL_FS_HOME" "$domain" "$user" >> "$userdb_tmp"
     mv "$userdb_tmp" "$userdb_file"
 
     local mail_domain_dir="${MAIL_LOCATION}/${domain}"
