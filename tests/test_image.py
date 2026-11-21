@@ -24,6 +24,14 @@ TEST_ADDRESS = f"test@{MAILNAME}"
 REUSE_IMAGE = os.environ.get("REUSE_IMAGE") == "1"
 
 
+def report_github_error(title: str, message: str) -> None:
+    """Expose a concise failure reason as a GitHub Actions annotation."""
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return
+    escaped = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    print(f"::error title={title}::{escaped}", flush=True)
+
+
 def docker(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     """Run a Docker command and return its completed process."""
     return subprocess.run(
@@ -143,7 +151,9 @@ class DockerImageSmokeTest(unittest.TestCase):
                 return
             time.sleep(1)
         logs = docker("logs", CONTAINER, check=False).stdout
-        raise AssertionError(f"Services did not become ready.\n{last_output}\n{logs}")
+        diagnostic = f"Services did not become ready.\n{last_output}\n{logs}"
+        report_github_error("Mail services did not start", diagnostic[-5000:])
+        raise AssertionError(diagnostic)
 
     def _exec(self, *args: str) -> subprocess.CompletedProcess[str]:
         return docker("exec", CONTAINER, *args)
@@ -168,7 +178,11 @@ class DockerImageSmokeTest(unittest.TestCase):
                 break
             time.sleep(1)
 
-        self.assertTrue(delivered_file, f"SMTP message was not delivered to {mailbox} mailbox")
+        if not delivered_file:
+            logs = docker("logs", CONTAINER, check=False).stdout
+            diagnostic = f"SMTP message was not delivered to {mailbox} mailbox.\n{logs}"
+            report_github_error("SMTP delivery failed", diagnostic[-5000:])
+            self.fail(diagnostic)
         self._exec("grep", "-Fq", subject, delivered_file)
 
     def _assert_imap_login(self, username: str, password: str) -> None:
@@ -190,7 +204,9 @@ class DockerImageSmokeTest(unittest.TestCase):
             except (OSError, imaplib.IMAP4.error) as error:
                 last_error = error
                 time.sleep(1)
-        raise AssertionError(f"IMAP login did not become ready: {last_error}")
+        diagnostic = f"IMAP login did not become ready for {username}: {last_error}"
+        report_github_error("IMAP login failed", diagnostic)
+        raise AssertionError(diagnostic)
 
     def test_container_is_running_with_configured_accounts(self) -> None:
         state = docker("inspect", "--format", "{{.State.Status}}", CONTAINER).stdout.strip()
