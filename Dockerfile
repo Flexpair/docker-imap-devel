@@ -17,6 +17,7 @@ RUN set -x; \
         dovecot-core \
         dovecot-imapd \
         dovecot-lmtpd \
+        gosu \
         iproute2 \
         postfix \
         rsyslog \
@@ -29,6 +30,7 @@ RUN set -x; \
     && chown -R "${MAIL_FS_USER}:" "$MAIL_FS_HOME" \
     && usermod -aG "$MAIL_FS_USER" postfix \
     && usermod -aG "$MAIL_FS_USER" dovecot \
+    && usermod -aG adm "$MAIL_FS_USER" \
     && echo "Installed: OK"
 
 COPY postfix /etc/postfix
@@ -43,4 +45,6 @@ VOLUME ["/var/mail"]
 EXPOSE 25 143 993
 
 ENTRYPOINT ["/usr/local/bin/entrypoint"]
+
+USER docker
 CMD ["tail", "-fn", "0", "/var/log/mail.log"]

@@ -147,4 +147,4 @@ _log "Docker entrypoint configured"
 rm -rf /var/run/dovecot/master.pid
 /usr/sbin/dovecot -c /etc/dovecot/dovecot.conf
 
-$@ & wait ${!}
+gosu "$MAIL_FS_USER" "$@" & wait ${!}
